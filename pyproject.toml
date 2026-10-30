@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phd-zotero-agent"
+version = "0.1.0"
+description = "DOI + PDF to an organised Zotero PhD collection"
+requires-python = ">=3.10"
+dependencies = ["pypdf>=5,<7"]
+
+[project.scripts]
+zotero-agent = "zotero_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["zotero_agent*"]
