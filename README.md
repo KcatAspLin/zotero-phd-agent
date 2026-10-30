@@ -55,12 +55,13 @@ zotero-agent preview --doi '10.xxxx/your-doi'
 zotero-agent enqueue --inbox inbox --doi '10.xxxx/your-doi'
 ```
 
-Clicking **Cancel** exits without making API requests or changing Zotero. The
-picker uses Python's optional Tk desktop support; check it with
-`python -m tkinter`. macOS installers from <https://www.python.org/downloads/macos/>
-include Tk. If your Python installation lacks Tk or you are using SSH/a server
-without a desktop, supply `--pdf` explicitly. The automatic watcher continues to
-read paths from its job files without opening windows.
+Clicking **Cancel** exits without making API requests or changing Zotero. On
+**macOS**, the agent uses the built-in native file picker through `osascript`;
+**Tk is not required**, including in virtual environments, Homebrew or Conda
+Python installations. On other desktop platforms, the picker uses Python's
+optional Tk support; check it with `python -m tkinter`. If you are using SSH/a
+server without a desktop, supply `--pdf` explicitly. The automatic watcher
+continues to read paths from its job files without opening windows.
 
 Run an optional preview first. It retrieves DOI metadata and asks the model to
 read extracted PDF text, but makes **no Zotero requests or changes**:

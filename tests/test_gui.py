@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -26,7 +27,7 @@ class PickerTests(unittest.TestCase):
         path = str(Path(tempfile.gettempdir()) / "papers with spaces" / "paper.pdf")
         tk, root, dialog = self.fake_tk(path)
         with patch.dict(sys.modules, {"tkinter": tk, "tkinter.filedialog": dialog}):
-            self.assertEqual(gui.choose_pdf(), str(Path(path).resolve()))
+            self.assertEqual(gui._choose_pdf_tk(), str(Path(path).resolve()))
         root.withdraw.assert_called_once()
         root.destroy.assert_called_once()
         self.assertIs(dialog.askopenfilename.call_args.kwargs["parent"], root)
@@ -34,20 +35,20 @@ class PickerTests(unittest.TestCase):
     def test_cancel_closes_window(self):
         tk, root, dialog = self.fake_tk()
         with patch.dict(sys.modules, {"tkinter": tk, "tkinter.filedialog": dialog}):
-            self.assertIsNone(gui.choose_pdf())
+            self.assertIsNone(gui._choose_pdf_tk())
         root.destroy.assert_called_once()
 
     def test_missing_tk_provides_command_line_fallback(self):
         with patch.dict(sys.modules, {"tkinter": None}):
             with self.assertRaisesRegex(AgentError, "pass --pdf"):
-                gui.choose_pdf()
+                gui._choose_pdf_tk()
 
     def test_no_desktop_provides_command_line_fallback(self):
         tk, root, dialog = self.fake_tk()
         tk.Tk.side_effect = tk.TclError("no display")
         with patch.dict(sys.modules, {"tkinter": tk, "tkinter.filedialog": dialog}):
             with self.assertRaisesRegex(AgentError, "desktop session"):
-                gui.choose_pdf()
+                gui._choose_pdf_tk()
         dialog.askopenfilename.assert_not_called()
 
     def test_dialog_error_still_closes_hidden_window(self):
@@ -55,8 +56,41 @@ class PickerTests(unittest.TestCase):
         dialog.askopenfilename.side_effect = tk.TclError("dialog unavailable")
         with patch.dict(sys.modules, {"tkinter": tk, "tkinter.filedialog": dialog}):
             with self.assertRaises(AgentError):
-                gui.choose_pdf()
+                gui._choose_pdf_tk()
         root.destroy.assert_called_once()
+
+    def test_macos_picker_works_without_tk_and_preserves_spaces(self):
+        path = str(Path(tempfile.gettempdir()) / "papers with spaces" / "O'Brien – paper.pdf")
+        completed = subprocess.CompletedProcess([], 0, stdout=path + "\n", stderr="")
+        with patch.object(gui.sys, "platform", "darwin"), \
+                patch.dict(sys.modules, {"tkinter": None}), \
+                patch.object(gui.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(gui.choose_pdf(), str(Path(path).resolve()))
+        command = run.call_args.args[0]
+        self.assertEqual(command[:2], ["/usr/bin/osascript", "-e"])
+        self.assertNotIn(path, command[2])
+        self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_macos_cancel_exits_without_tk_fallback(self):
+        completed = subprocess.CompletedProcess([], 0, stdout="\n", stderr="")
+        with patch.object(gui.sys, "platform", "darwin"), \
+                patch.object(gui.subprocess, "run", return_value=completed), \
+                patch.object(gui, "_choose_pdf_tk") as tk:
+            self.assertIsNone(gui.choose_pdf())
+            tk.assert_not_called()
+
+    def test_macos_native_error_provides_path_fallback(self):
+        completed = subprocess.CompletedProcess([], 1, stdout="", stderr="dialog failed")
+        with patch.object(gui.sys, "platform", "darwin"), \
+                patch.object(gui.subprocess, "run", return_value=completed):
+            with self.assertRaisesRegex(AgentError, "pass --pdf"):
+                gui.choose_pdf()
+
+    def test_macos_missing_osascript_provides_path_fallback(self):
+        with patch.object(gui.sys, "platform", "darwin"), \
+                patch.object(gui.subprocess, "run", side_effect=FileNotFoundError):
+            with self.assertRaisesRegex(AgentError, "pass --pdf"):
+                gui.choose_pdf()
 
     def test_cancel_makes_no_network_requests_or_state(self):
         for command in ("preview", "import", "enqueue"):
