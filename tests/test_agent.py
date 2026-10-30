@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,7 +27,8 @@ def response(value, status=200):
 
 def write_pdf(path):
     text = TITLE + ". Abstract. " + ABSTRACT + " " + ("Auditory sequence learning. " * 12)
-    stream = f"BT /F1 10 Tf 20 700 Td ({text}) Tj ET".encode()
+    lines = textwrap.wrap(text, width=80)
+    stream = ("BT /F1 10 Tf 14 TL 20 700 Td " + " T* ".join(f"({line}) Tj" for line in lines) + " ET").encode()
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",

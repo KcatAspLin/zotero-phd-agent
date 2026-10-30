@@ -282,7 +282,11 @@ attachments. Existing record types other than `journalArticle` require manual
 reconciliation; this first version creates journal-article records. Preprints
 without journal information will normally require review.
 
-Readable text PDFs up to 100 MiB are supported. Scans need OCR first. In OpenAI
+Readable text PDFs up to 100 MiB are supported. Text extraction prefers PyMuPDF,
+with pypdf as a fallback for document or page failures. Reports record the
+extractor and unreadable page numbers in `pdf_extraction`. If some pages remain
+unreadable, the agent returns `review_required` even when the model is confident.
+Scans need OCR first. In OpenAI
 mode, papers longer than 90,000 extracted characters are sampled; local mode
 uses its smaller context-aware byte budget. The model receives front matter
 plus samples from remaining pages; reports mark this with `sampled: true`.
@@ -294,6 +298,33 @@ the repository and run `python -m pip install -e .` in the same Python environme
 that runs `zotero-agent`. You can also install it directly with
 `python -m pip install fonttools`. This font warning is separate from API billing
 or rate-limit errors.
+
+### PDF extraction errors versus model context limits
+
+`Exceeded 5000 form XObject invocations` is a PDF-parser limit on repeated or
+nested drawing/form content. It is not a model-token count. Increasing
+`OLLAMA_NUM_CTX` will not fix a parser failure. The PyMuPDF extractor avoids the
+pypdf code path that emits this warning; pypdf's protective limit stays intact
+when it is used as a fallback. An incomplete extraction is flagged for review.
+
+Update and retry the same original PDF with fresh extraction:
+
+```bash
+git pull --ff-only
+python -m pip install -e .
+zotero-agent preview --doi '10.xxxx/your-doi' --refresh
+```
+
+The original PDF is not rewritten by text extraction and remains the attachment
+used on import. If both extractors fail, try another publisher download, or
+export a readable/OCR-processed copy. Automatic OCR is not included.
+
+For an actual model context limit, the agent already samples front matter plus
+later pages to its configured budget. A larger model-supported context can
+increase paper coverage, but also uses more memory. Keep `OLLAMA_NUM_CTX=32768`
+for the recommended Qwen3 models unless you have checked their supported context
+and your available memory. Whole-document chunk-and-merge analysis is not
+implemented; long-paper classification relies on sampled content.
 
 ## Recovery and privacy
 

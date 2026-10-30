@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 from .net import AgentError, HttpError
+from .pdf_text import extract_pages
 
 CATEGORIES = ("Methods", "Perspectives", "Research Article", "Reviews", "Theory")
 
@@ -50,23 +51,12 @@ def file_hash(path, algorithm="sha256"):
 
 
 def read_pdf(path, budget=90000, *, byte_budget=None):
-    from pypdf import PdfReader
     path = Path(path).expanduser().resolve()
     if not path.is_file():
         raise AgentError(f"PDF not found: {path}")
     if path.stat().st_size > 100 * 1024 * 1024:
         raise AgentError("PDF exceeds the 100 MiB input limit")
-    try:
-        reader = PdfReader(path)
-        if reader.is_encrypted and not reader.decrypt(""):
-            raise AgentError("PDF is password protected; supply an unlocked copy")
-        pages = [p.extract_text() or "" for p in reader.pages]
-    except AgentError:
-        raise
-    except Exception as exc:
-        raise AgentError("Could not extract PDF text; supply a readable PDF") from exc
-    if len("".join(pages).strip()) < 200:
-        raise AgentError("Too little PDF text; run OCR on scanned PDFs first")
+    pages, extraction = extract_pages(path)
     use_bytes = byte_budget is not None
     limit = byte_budget if use_bytes else budget
     measure = (lambda text: len(text.encode("utf-8"))) if use_bytes else len
@@ -89,7 +79,7 @@ def read_pdf(path, budget=90000, *, byte_budget=None):
         selected = [first] + [clip(p, per_page) for p in pages[front:]]
     return {"path": str(path), "sha256": file_hash(path), "pages": len(pages),
             "sampled": total > limit, "text": "\n\n".join(selected),
-            "front_text": "\n".join(pages[:3])}
+            "front_text": "\n".join(pages[:3]), "extraction": extraction}
 
 
 def date_string(record):
@@ -223,6 +213,9 @@ def validate_analysis(result):
 
 def make_plan(meta, pdf, analysis, model):
     problems = []
+    failed_pages = pdf.get("extraction", {}).get("failed_pages", [])
+    if failed_pages:
+        problems.append("PDF extraction incomplete on page(s): " + ", ".join(map(str, failed_pages)) + "; supply a text-readable or OCR-processed PDF")
     if (not analysis["matches_doi_metadata"] or not title_matches(meta["title"], analysis["pdf_title"]) or
             normalized_text(analysis["pdf_title"]) not in normalized_text(pdf["front_text"])):
         problems.append("DOI/PDF title mismatch or unverifiable paper title")
@@ -239,5 +232,6 @@ def make_plan(meta, pdf, analysis, model):
         problems.append("Classification confidence below 0.65; category needs review")
     return {"schema_version": 1, "doi": meta["DOI"], "pdf": pdf["path"], "sha256": pdf["sha256"],
             "pages": pdf["pages"], "sampled": pdf["sampled"], "metadata": meta,
+            "pdf_extraction": pdf.get("extraction", {}),
             "category": analysis["category"], "tags": analysis["tags"], "reason": analysis["reason"],
             "confidence": analysis["confidence"], "model": model, "review_reasons": problems}
