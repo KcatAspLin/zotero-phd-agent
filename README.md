@@ -41,6 +41,27 @@ storage and model API access are required; model requests may incur API charges.
 
 ## Import one paper
 
+Omit `--pdf` to open a desktop file-selection window. Select your PDF and click
+**Open**; the agent uses its full path automatically:
+
+```bash
+zotero-agent import --doi '10.xxxx/your-doi'
+```
+
+The picker also works with `preview` and `enqueue`:
+
+```bash
+zotero-agent preview --doi '10.xxxx/your-doi'
+zotero-agent enqueue --inbox inbox --doi '10.xxxx/your-doi'
+```
+
+Clicking **Cancel** exits without making API requests or changing Zotero. The
+picker uses Python's optional Tk desktop support; check it with
+`python -m tkinter`. macOS installers from <https://www.python.org/downloads/macos/>
+include Tk. If your Python installation lacks Tk or you are using SSH/a server
+without a desktop, supply `--pdf` explicitly. The automatic watcher continues to
+read paths from its job files without opening windows.
+
 Run an optional preview first. It retrieves DOI metadata and asks the model to
 read extracted PDF text, but makes **no Zotero requests or changes**:
 

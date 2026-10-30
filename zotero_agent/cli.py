@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from .content import CATEGORIES, analyze, file_hash, make_plan, metadata, normalize_doi, read_pdf
+from .gui import choose_pdf
 from .net import AgentError, HTTP
 from .state import State, atomic_json
 from .zotero import Zotero
@@ -166,7 +167,7 @@ def parser():
     for name in ("preview", "import", "enqueue"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--doi", required=True)
-        cmd.add_argument("--pdf", required=True)
+        cmd.add_argument("--pdf", help="PDF path; omit to choose a file in a desktop window")
         if name == "enqueue":
             cmd.add_argument("--inbox", default="inbox")
         else:
@@ -184,6 +185,13 @@ def main():
     args = parser().parse_args()
     try:
         load_env(args.env)
+        if args.command in ("preview", "import", "enqueue"):
+            args.doi = normalize_doi(args.doi)
+            if args.pdf is None:
+                args.pdf = choose_pdf()
+                if args.pdf is None:
+                    print(json.dumps({"status": "cancelled", "message": "No PDF selected."}))
+                    return 0
         if args.command == "enqueue":
             result = enqueue(args)
         else:
