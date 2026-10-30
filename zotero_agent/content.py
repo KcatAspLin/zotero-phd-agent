@@ -171,7 +171,7 @@ def analyze(http, meta, pdf, key, model):
              "matches_doi_metadata": {"type": "boolean"}}
     schema = {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
     response = http.request("POST", "https://api.openai.com/v1/responses",
-                            headers={"Authorization": f"Bearer {key}"}, json_data={
+                            headers={"Authorization": f"Bearer {key}"}, retry_429=True, json_data={
         "model": model, "store": False, "max_output_tokens": 8000,
         "instructions": SYSTEM,
         "input": json.dumps({"bibliographic_metadata": meta, "sampled_pdf": pdf["sampled"],

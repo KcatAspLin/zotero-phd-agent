@@ -227,6 +227,32 @@ is treated as untrusted evidence and has no tool access. Reports contain paper
 metadata and abstracts, but no API keys. Protect the state directory as you
 would your reading library.
 
+## OpenAI HTTP 429 errors
+
+HTTP 429 can mean either a temporary request/token rate limit or an API billing,
+spending or usage limit. The agent reads the API's error code and type, displays
+a specific remedy, and never prints raw error messages or keys.
+
+- `rate_limit_exceeded` / `slow_down`: temporary throttling. The agent makes at
+  most three retries, respecting `Retry-After` and using exponential backoff with
+  jitter. If it persists, check the model/project limits at
+  <https://platform.openai.com/settings/organization/limits>.
+- `credit_balance_exhausted` / `insufficient_quota`: check your API credit balance
+  and billing at <https://platform.openai.com/settings/organization/billing/overview>.
+  Repeated retries do not restore credits or quota.
+- `project_spend_limit_exceeded`, `organization_spend_limit_exceeded` or
+  `organization_usage_limit_exceeded`: check the relevant project's or
+  organization's enforced limits. These errors are not automatically retried.
+- If the response has no recognised code or type, the agent reports the cause
+  as unknown rather than assuming a temporary rate limit.
+
+Timeouts, connection failures and server errors during model POST requests are
+not automatically replayed because the processing outcome may be unknown. Rerun
+the command after resolving the issue. If using the inbox, remove only the failed
+job's result JSON from `inbox/reports` to retry it; keep `.zotero-agent` intact.
+The API call happens before Zotero writes, so a classification request that
+fails here does not create a new Zotero record on that attempt.
+
 ## Validation and limitations
 
 Run the offline protocol and recovery tests:
