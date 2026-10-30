@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from .content import SYSTEM, classification_schema, validate_analysis
+from .content import analysis_instructions, classification_schema, validate_analysis
 from .net import AgentError, HttpError
 
 
@@ -58,7 +58,7 @@ class LLMConfig:
 
 def local_messages(meta, pdf):
     return [
-        {"role": "system", "content": SYSTEM + "\nReturn only JSON matching this schema:\n" + json.dumps(classification_schema())},
+        {"role": "system", "content": analysis_instructions(meta) + "\nReturn only JSON matching this schema:\n" + json.dumps(classification_schema(meta.get("input_mode") == "pdf_only"))},
         {"role": "user", "content": json.dumps({"bibliographic_metadata": meta,
           "sampled_pdf": pdf["sampled"], "paper_text": pdf["text"]}, ensure_ascii=False)},
     ]
@@ -84,7 +84,7 @@ def analyze_local(http, meta, pdf, config):
     try:
         response = http.request("POST", config.base_url + "/api/chat", allow_localhost=True, timeout=900,
                                 json_data={"model": config.model, "messages": messages,
-                                           "format": classification_schema(), "stream": False, "think": False,
+                                           "format": classification_schema(meta.get("input_mode") == "pdf_only"), "stream": False, "think": False,
                                            "options": {"temperature": 0, "num_ctx": config.num_ctx, "num_predict": 4096}}).json()
     except HttpError as exc:
         if exc.status == 404:
@@ -96,7 +96,7 @@ def analyze_local(http, meta, pdf, config):
         raise AgentError("Local model response incomplete; no Zotero changes made")
     try:
         result = json.loads(response["message"]["content"])
-        validate_analysis(result)
+        validate_analysis(result, pdf_only=meta.get("input_mode") == "pdf_only")
     except (ValueError, KeyError, TypeError) as exc:
         raise AgentError("Invalid local model JSON or tags; no Zotero changes made. Try a larger model or use --refresh to retry.") from exc
     return result

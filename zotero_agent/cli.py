@@ -7,7 +7,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .content import CATEGORIES, analyze, file_hash, make_plan, metadata, normalize_doi, read_pdf
+from .content import CATEGORIES, analyze, file_hash, make_plan, metadata, optional_doi, pdf_only_metadata, read_pdf
 from .gui import choose_pdf
 from .local_llm import LLMConfig, analyze_local, local_text_budget
 from .net import AgentError, HTTP
@@ -35,7 +35,7 @@ def load_env(path):
 
 
 def process(args, state, http):
-    doi = normalize_doi(args.doi)
+    doi = optional_doi(args.doi)
     path = Path(args.pdf).expanduser().resolve()
     if not path.is_file():
         raise AgentError(f"PDF not found: {path}")
@@ -47,13 +47,13 @@ def process(args, state, http):
         zot = Zotero(http, os.getenv("ZOTERO_LIBRARY_ID", ""), os.getenv("ZOTERO_LIBRARY_TYPE", "user"),
                      os.getenv("ZOTERO_API_KEY", ""))
     with state.lock():
-        job, identity = state.job(library, doi, sha)
+        job, identity = state.job(library, doi or "pdf:" + sha, sha)
         plan = job.get("plan")
         if plan is None or args.refresh or not config.matches(plan):
             key = os.getenv("OPENAI_API_KEY", "")
             if config.provider == "openai" and not key:
                 raise AgentError("Set OPENAI_API_KEY in .env")
-            meta = metadata(http, doi, os.getenv("CROSSREF_EMAIL", ""))
+            meta = metadata(http, doi, os.getenv("CROSSREF_EMAIL", "")) if doi else pdf_only_metadata()
             if config.provider == "ollama":
                 pdf = read_pdf(path, byte_budget=local_text_budget(meta, config.num_ctx))
             else:
@@ -91,13 +91,13 @@ def process(args, state, http):
 
 
 def enqueue(args):
-    doi = normalize_doi(args.doi)
+    doi = optional_doi(args.doi)
     pdf = Path(args.pdf).expanduser().resolve()
     if not pdf.is_file():
         raise AgentError(f"PDF not found: {pdf}")
     inbox = Path(args.inbox).expanduser().resolve()
     path = inbox / f"paper-{uuid.uuid4().hex[:12]}.json"
-    atomic_json(path, {"doi": doi, "pdf": str(pdf)})
+    atomic_json(path, {"pdf": str(pdf), **({"doi": doi} if doi else {})})
     return {"status": "queued", "manifest": str(path)}
 
 
@@ -105,8 +105,9 @@ def load_manifest(path):
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or set(value) - {"doi", "pdf", "category", "allow_missing"}:
         raise AgentError("Manifest accepts doi, pdf, category and allow_missing only")
-    if not all(isinstance(value.get(k), str) and value[k] for k in ("doi", "pdf")):
-        raise AgentError("Manifest requires non-empty doi and pdf strings")
+    if not isinstance(value.get("pdf"), str) or not value["pdf"]:
+        raise AgentError("Manifest requires a non-empty pdf string")
+    value["doi"] = optional_doi(value.get("doi"))
     if value.get("category") is not None and value["category"] not in CATEGORIES:
         raise AgentError("Invalid manifest category")
     if "allow_missing" in value and not isinstance(value["allow_missing"], bool):
@@ -166,13 +167,13 @@ def watch(args, state, http):
 
 
 def parser():
-    result = argparse.ArgumentParser(description="DOI + PDF → Zotero/PhD, one category and five generated tags")
+    result = argparse.ArgumentParser(description="PDF (optional DOI) → Zotero/PhD, one category and five generated tags")
     result.add_argument("--env", default=".env", help="Environment file (default .env in current directory)")
     result.add_argument("--state-dir", default=".zotero-agent", help="Keep this directory to resume uploads")
     sub = result.add_subparsers(dest="command", required=True)
     for name in ("preview", "import", "enqueue"):
         cmd = sub.add_parser(name)
-        cmd.add_argument("--doi", required=True)
+        cmd.add_argument("--doi", help="Optional DOI; omit to extract metadata from the PDF")
         cmd.add_argument("--pdf", help="PDF path; omit to choose a file in a desktop window")
         if name == "enqueue":
             cmd.add_argument("--inbox", default="inbox")
@@ -192,7 +193,7 @@ def main():
     try:
         load_env(args.env)
         if args.command in ("preview", "import", "enqueue"):
-            args.doi = normalize_doi(args.doi)
+            args.doi = optional_doi(args.doi)
             if args.pdf is None:
                 args.pdf = choose_pdf()
                 if args.pdf is None:

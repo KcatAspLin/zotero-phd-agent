@@ -25,8 +25,8 @@ def response(value, status=200):
     return Response(status, {}, json.dumps(value).encode())
 
 
-def write_pdf(path):
-    text = TITLE + ". Abstract. " + ABSTRACT + " " + ("Auditory sequence learning. " * 12)
+def write_pdf(path, text=None):
+    text = text if text is not None else TITLE + ". Abstract. " + ABSTRACT + " " + ("Auditory sequence learning. " * 12)
     lines = textwrap.wrap(text, width=80)
     stream = ("BT /F1 10 Tf 14 TL 20 700 Td " + " T* ".join(f"({line}) Tj" for line in lines) + " ET").encode()
     objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -69,6 +69,18 @@ class FakeHTTP:
 
     def request(self, method, url, **kw):
         self.calls.append((method, url, kw))
+        if url.startswith("https://api.zotero.org/items/new?"):
+            from urllib.parse import parse_qs, urlsplit
+            kind = parse_qs(urlsplit(url).query)["itemType"][0]
+            fields = {"title": "", "creators": [], "date": "", "abstractNote": "", "DOI": "", "url": "",
+                      "extra": "", "tags": [], "collections": [], "relations": {}}
+            if kind == "journalArticle":
+                fields.update(publicationTitle="", volume="", issue="", pages="")
+            elif kind == "conferencePaper":
+                fields.update(proceedingsTitle="", conferenceName="", pages="", volume="")
+            elif kind == "preprint":
+                fields.update(repository="", archiveID="")
+            return response({"itemType": kind, **fields})
         if "api.crossref.org" in url:
             if self.crossref_missing:
                 raise HttpError(404, "api.crossref.org")
@@ -112,6 +124,8 @@ class FakeHTTP:
                 records = list(bucket.values())
             from urllib.parse import parse_qs
             q = parse_qs(query)
+            if q.get("itemType") == ["attachment"]:
+                records = [record for record in records if record["data"].get("itemType") == "attachment"]
             start = int(q.get("start", [0])[0])
             return response(copy.deepcopy(records[start:start+100]))
         if method == "PATCH":

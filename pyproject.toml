@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "phd-zotero-agent"
 version = "0.1.0"
-description = "DOI + PDF to an organised Zotero PhD collection"
+description = "PDF import with optional DOI metadata, Zotero organisation and scientific tags"
 requires-python = ">=3.10"
 dependencies = ["pypdf>=5,<7", "fonttools>=4,<5", "pymupdf>=1.24,<2"]
 

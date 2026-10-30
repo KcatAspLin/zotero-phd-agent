@@ -1,7 +1,7 @@
 # PhD Zotero agent
 
-Turn a DOI and a PDF into a Zotero record with authors, journal, publication date,
-DOI, abstract, the PDF attachment, one category under **PhD**, and **five generated
+Turn a PDF, with an optional DOI, into a Zotero record with authors, venue,
+publication date, DOI when supplied, abstract, the PDF attachment, one category under **PhD**, and **five generated
 scientific keyword tags**. Includes single-paper import and an automatic inbox.
 Choose a free local model through **Ollama**, or the OpenAI API.
 
@@ -124,7 +124,68 @@ Zotero item and attachment recovery state. `--refresh` forces another analysis.
 To return to the OpenAI provider, set `LLM_PROVIDER=openai` and configure the
 OpenAI key/model. There is no automatic provider fallback.
 
-## Import one paper
+## Import a paper without a DOI (including NeurIPS papers)
+
+Run either command and select your PDF in the file picker:
+
+```bash
+zotero-agent preview
+zotero-agent import
+```
+
+Or specify its path:
+
+```bash
+zotero-agent import --pdf '/path/to/neurips-paper.pdf'
+```
+
+The DOI is optional for `preview`, `import` and `enqueue`. Both Ollama and OpenAI
+support PDF-only mode. If a DOI is available, pass `--doi` as before to use its
+registry metadata. Without it, the agent makes no DOI/Crossref lookup and does
+not invent or guess a DOI from the PDF or its references.
+
+In PDF-only mode the model extracts this paper's title, full author names,
+venue, publication year and abstract. Title, author, venue and year evidence
+are checked against extracted front matter; abstracts are checked against the
+extracted paper text. This checks text evidence, not an external proceedings
+record. Inspect initial previews because extraction and model interpretation
+can still be wrong.
+
+In PDF-only mode, published conference papers use Zotero's `conferencePaper` type and store the
+venue in `proceedingsTitle`; journal articles use `journalArticle` and
+`publicationTitle`. Identifiable preprints use `preprint`; uncertain publication
+types use `document`. Publication type is separate from your five PhD category
+folders: a conference paper may still belong in Methods, Theory, etc. The agent
+uses Zotero's item templates to send valid fields for each type.
+
+PDF author names are stored in their printed order as full-name, single-field
+creators. It does not guess given/family-name boundaries. Unknown dates/authors
+remain blank and normally trigger `review_required`. Anonymous submissions are
+not deanonymised. An absent DOI alone never triggers review in PDF-only mode.
+`--allow-missing` permits genuinely unavailable fields to stay blank; it does
+not bypass failed text-evidence checks.
+
+The inbox can also accept PDF-only job files:
+
+```json
+{"pdf": "paper.pdf"}
+```
+
+Or queue one through the picker:
+
+```bash
+zotero-agent enqueue --inbox inbox
+```
+
+Duplicate checks use supplied DOI, recorded PDF SHA-256 fingerprints and existing
+child-attachment MD5 hashes, then exact normalised title plus first author.
+Renaming a PDF does not duplicate it. Distinct PDF versions with the same title
+and first author can share a record with separate attachments. Ambiguous matches
+stop the import. Existing non-empty fields and publication types are preserved;
+adding a DOI later can fill the existing PDF-only item instead of creating a new
+one. Standalone attachments without a parent record are not automatically moved.
+
+## Import one paper with a DOI
 
 Omit `--pdf` to open a desktop file-selection window. Select your PDF and click
 **Open**; the agent uses its full path automatically:
@@ -247,7 +308,7 @@ metadata provenance; other Extra content is preserved.
 
 ## Metadata, checks and review
 
-Bibliographic fields come from Crossref's DOI record, with DOI CSL content
+When a DOI is supplied, bibliographic fields come from Crossref's DOI record, with DOI CSL content
 negotiation as a fallback for DOIs not found there. Author order and given/family
 name fields are preserved; consortium names use single-field creators. The date
 is a publication date (print, then online, then issued), never a metadata deposit
@@ -255,8 +316,9 @@ timestamp. An available registry abstract takes priority. Otherwise, the model
 copies the abstract from the PDF and the program checks that the text occurs in
 the extracted PDF. It never substitutes a generated summary for an abstract.
 
-Before any Zotero write, the program checks the paper's front-matter title
-against the DOI metadata and checks the model's match assessment. This is a
+Before any Zotero write, DOI mode checks the paper's front-matter title
+against the DOI metadata and the model's match assessment. PDF-only mode checks
+copied metadata against the paper's text. This is a
 heuristic identity check, not a guarantee. Difficult layouts can require review.
 Missing required metadata, a title mismatch or category confidence below 0.65
 returns `review_required` and leaves Zotero untouched for that attempt.
@@ -273,14 +335,14 @@ bypasses the DOI/PDF identity check. Inbox JSON supports `"category": "Methods"`
 and `"allow_missing": true` for the same overrides. Edit the JSON to trigger a
 new attempt after review.
 
-Existing bibliographic records are matched by exact normalised DOI across the
-paginated library. The agent fills empty fields and preserves non-empty existing
+Existing bibliographic records are matched by DOI/PDF identity or title/author
+as described above, across the paginated library. The agent fills empty fields and preserves non-empty existing
 values; differing fields are listed in the report as `preserved_existing_fields`.
 It stops if multiple records have the same DOI. PDF attachments are deduplicated
 by their MD5 hash under that record. Distinct PDF versions remain distinct
-attachments. Existing record types other than `journalArticle` require manual
-reconciliation; this first version creates journal-article records. Preprints
-without journal information will normally require review.
+attachments. Journal articles, conference papers, preprints and generic document
+records are supported. An existing different type requires manual reconciliation.
+PDF-only preprints/documents do not require a journal field.
 
 Readable text PDFs up to 100 MiB are supported. Text extraction prefers PyMuPDF,
 with pypdf as a fallback for document or page failures. Reports record the
@@ -343,7 +405,8 @@ The same state directory prevents overlapping imports on one computer. Separate
 computers/state directories do not provide a distributed lock; avoid concurrent
 imports of the same DOI.
 
-The DOI goes to metadata services. With `LLM_PROVIDER=openai`, extracted text
+A supplied DOI goes to metadata services; PDF-only imports skip that lookup.
+With `LLM_PROVIDER=openai`, extracted text
 and metadata go to OpenAI with `store: false`; this is not a promise of zero
 retention. With `LLM_PROVIDER=ollama`, analysis requests go to your local Ollama
 server; use downloaded local weights to keep inference on your computer.

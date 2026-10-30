@@ -11,6 +11,7 @@ from .net import AgentError, HttpError
 from .pdf_text import extract_pages
 
 CATEGORIES = ("Methods", "Perspectives", "Research Article", "Reviews", "Theory")
+PAPER_TYPES = ("journalArticle", "conferencePaper", "preprint", "document")
 
 
 def normalize_doi(value):
@@ -20,6 +21,19 @@ def normalize_doi(value):
     if not re.fullmatch(r"10\.\d{4,9}/[^\s?#]+", value):
         raise AgentError("Invalid DOI: use 10.xxxx/suffix or https://doi.org/10.xxxx/suffix")
     return value
+
+
+def optional_doi(value):
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str):
+        raise AgentError("DOI must be text, or omitted for PDF-only import")
+    return normalize_doi(value)
+
+
+def pdf_only_metadata():
+    return {"input_mode": "pdf_only", "DOI": "", "title": "", "creators": [],
+            "date": "", "abstractNote": "", "metadata_source": "PDF", "abstract_source": ""}
 
 
 def plain(value):
@@ -161,21 +175,52 @@ confidence is your classification confidence, not a calibrated probability.
 """
 
 
-def classification_schema():
+def analysis_instructions(meta):
+    if meta.get("input_mode") != "pdf_only":
+        return SYSTEM
+    return SYSTEM + """
+No DOI or authoritative bibliographic record was supplied. Extract metadata from
+THIS paper's front matter and publication footer, never its references. Do not
+invent a DOI or use a cited paper's metadata. Set matches_doi_metadata to true
+(there is no external DOI record to compare). In pdf_metadata provide:
+authors: ordered full names, each copied exactly as printed, without affiliations
+or footnote markers. Use [] for anonymous/missing authors; do not deanonymise.
+venue: the journal/proceedings/conference name exactly as printed; empty if absent.
+year: four-digit publication year, empty if unavailable; never use a cited year.
+year_evidence: an exact quote from the publication footer/header containing year.
+item_type: conferencePaper for published conference/proceedings papers (including
+NeurIPS), journalArticle for journal papers, preprint for identifiable preprints,
+or document when unclear. Do not infer publication from subject or PDF filename.
+item_type_evidence: exact front-matter/footer text supporting the publication type,
+empty for document when unknown. Leave unknown metadata empty rather than guess.
+pdf_title and pdf_abstract must still be verbatim copies from this paper.
+"""
+
+
+def classification_schema(pdf_only=False):
     props = {"category": {"type": "string", "enum": list(CATEGORIES)},
              "tags": {"type": "array", "items": {"type": "string"}, "minItems": 5, "maxItems": 5},
              "reason": {"type": "string"}, "confidence": {"type": "number"},
              "pdf_title": {"type": "string"}, "pdf_abstract": {"type": "string"},
              "matches_doi_metadata": {"type": "boolean"}}
+    if pdf_only:
+        fields = {"authors": {"type": "array", "items": {"type": "string"}},
+                  "venue": {"type": "string"}, "year": {"type": "string"},
+                  "year_evidence": {"type": "string"},
+                  "item_type": {"type": "string", "enum": list(PAPER_TYPES)},
+                  "item_type_evidence": {"type": "string"}}
+        props["pdf_metadata"] = {"type": "object", "properties": fields,
+                                 "required": list(fields), "additionalProperties": False}
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
 
 def analyze(http, meta, pdf, key, model):
-    schema = classification_schema()
+    pdf_only = meta.get("input_mode") == "pdf_only"
+    schema = classification_schema(pdf_only)
     response = http.request("POST", "https://api.openai.com/v1/responses",
                             headers={"Authorization": f"Bearer {key}"}, retry_429=True, json_data={
         "model": model, "store": False, "max_output_tokens": 8000,
-        "instructions": SYSTEM,
+        "instructions": analysis_instructions(meta),
         "input": json.dumps({"bibliographic_metadata": meta, "sampled_pdf": pdf["sampled"],
                              "paper_text": pdf["text"]}, ensure_ascii=False),
         "text": {"format": {"type": "json_schema", "name": "paper_classification", "strict": True, "schema": schema}}
@@ -187,13 +232,13 @@ def analyze(http, meta, pdf, key, model):
         raise AgentError("Model declined analysis; no Zotero changes made")
     try:
         result = json.loads("".join(p.get("text", "") for p in outputs if p.get("type") == "output_text"))
-        validate_analysis(result)
+        validate_analysis(result, pdf_only=pdf_only)
     except (ValueError, KeyError, TypeError) as exc:
         raise AgentError("Invalid model analysis; no Zotero changes made") from exc
     return result
 
 
-def validate_analysis(result):
+def validate_analysis(result, pdf_only=False):
     if result["category"] not in CATEGORIES:
         raise ValueError("category")
     tags = result["tags"]
@@ -209,15 +254,67 @@ def validate_analysis(result):
     for name in ("pdf_title", "pdf_abstract", "reason"):
         if not isinstance(result[name], str):
             raise ValueError(name)
+    if pdf_only:
+        extracted = result["pdf_metadata"]
+        if extracted["item_type"] not in PAPER_TYPES:
+            raise ValueError("item_type")
+        if not isinstance(extracted["authors"], list) or not all(isinstance(a, str) and a.strip() for a in extracted["authors"]):
+            raise ValueError("authors")
+        for name in ("venue", "year", "year_evidence", "item_type_evidence"):
+            if not isinstance(extracted[name], str):
+                raise ValueError(name)
+        if extracted["year"] and not re.fullmatch(r"[12]\d{3}", extracted["year"]):
+            raise ValueError("publication year")
+
+
+def metadata_from_pdf(pdf, analysis):
+    """Accept copied metadata only when its evidence occurs in the front matter."""
+    extracted = analysis["pdf_metadata"]
+    front = normalized_text(pdf["front_text"])
+    issues = []
+
+    def present(text):
+        return bool(text.strip()) and normalized_text(text) in front
+
+    kind = extracted["item_type"]
+    if kind != "document" and not present(extracted["item_type_evidence"]):
+        issues.append("PDF publication type could not be verified from front matter")
+        kind = "document"
+    authors = []
+    for author in extracted["authors"]:
+        if present(author):
+            authors.append({"creatorType": "author", "name": " ".join(author.split())})
+        else:
+            issues.append("A PDF author name could not be verified from front matter")
+    venue = extracted["venue"].strip()
+    if venue and not present(venue):
+        issues.append("PDF venue could not be verified from front matter")
+        venue = ""
+    year = extracted["year"]
+    if year and not (present(extracted["year_evidence"]) and year in extracted["year_evidence"]):
+        issues.append("PDF publication year could not be verified from front matter")
+        year = ""
+    meta = {**pdf_only_metadata(), "itemType": kind, "title": analysis["pdf_title"].strip(),
+            "creators": authors, "date": year, "metadata_source": "PDF (model extracted; text evidence checked)",
+            "verification_issues": list(dict.fromkeys(issues))}
+    field = {"conferencePaper": "proceedingsTitle", "journalArticle": "publicationTitle", "preprint": "repository"}.get(kind)
+    if field:
+        meta[field] = venue
+    return meta
 
 
 def make_plan(meta, pdf, analysis, model):
-    problems = []
+    pdf_only = meta.get("input_mode") == "pdf_only"
+    if pdf_only:
+        meta = metadata_from_pdf(pdf, analysis)
+    problems = list(meta.get("verification_issues", []))
     failed_pages = pdf.get("extraction", {}).get("failed_pages", [])
     if failed_pages:
         problems.append("PDF extraction incomplete on page(s): " + ", ".join(map(str, failed_pages)) + "; supply a text-readable or OCR-processed PDF")
-    if (not analysis["matches_doi_metadata"] or not title_matches(meta["title"], analysis["pdf_title"]) or
-            normalized_text(analysis["pdf_title"]) not in normalized_text(pdf["front_text"])):
+    title_present = bool(analysis["pdf_title"].strip()) and normalized_text(analysis["pdf_title"]) in normalized_text(pdf["front_text"])
+    if pdf_only and not title_present:
+        problems.append("PDF title could not be verified from front matter")
+    elif not pdf_only and (not analysis["matches_doi_metadata"] or not title_matches(meta["title"], analysis["pdf_title"]) or not title_present):
         problems.append("DOI/PDF title mismatch or unverifiable paper title")
     meta = dict(meta)
     if not meta.get("abstractNote") and analysis["pdf_abstract"]:
@@ -225,12 +322,17 @@ def make_plan(meta, pdf, analysis, model):
         if normalized_text(abstract) in normalized_text(pdf["text"]):
             meta["abstractNote"] = " ".join(abstract.split())
             meta["abstract_source"] = "PDF verbatim (model extracted, text checked)"
-    missing = [k for k in ("title", "creators", "publicationTitle", "date", "DOI", "abstractNote") if not meta.get(k)]
+    required = ["title", "creators", "date", "abstractNote"]
+    if not pdf_only:
+        required += ["publicationTitle", "DOI"]
+    elif meta["itemType"] in ("conferencePaper", "journalArticle"):
+        required += ["proceedingsTitle" if meta["itemType"] == "conferencePaper" else "publicationTitle"]
+    missing = [k for k in required if not meta.get(k)]
     if missing:
         problems.append("Missing metadata: " + ", ".join(missing))
     if analysis["confidence"] < .65:
         problems.append("Classification confidence below 0.65; category needs review")
-    return {"schema_version": 1, "doi": meta["DOI"], "pdf": pdf["path"], "sha256": pdf["sha256"],
+    return {"schema_version": 2, "input_mode": "pdf_only" if pdf_only else "doi", "doi": meta["DOI"], "pdf": pdf["path"], "sha256": pdf["sha256"],
             "pages": pdf["pages"], "sampled": pdf["sampled"], "metadata": meta,
             "pdf_extraction": pdf.get("extraction", {}),
             "category": analysis["category"], "tags": analysis["tags"], "reason": analysis["reason"],
