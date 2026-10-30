@@ -7,7 +7,7 @@ name = "phd-zotero-agent"
 version = "0.1.0"
 description = "DOI + PDF to an organised Zotero PhD collection"
 requires-python = ">=3.10"
-dependencies = ["pypdf>=5,<7"]
+dependencies = ["pypdf>=5,<7", "fonttools>=4,<5"]
 
 [project.scripts]
 zotero-agent = "zotero_agent.cli:main"

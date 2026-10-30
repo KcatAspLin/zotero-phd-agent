@@ -202,6 +202,13 @@ longer than 90,000 extracted characters, the model receives front matter plus
 samples from the remaining pages; reports mark this with `sampled: true`.
 Classification can miss details in omitted text.
 
+The `fonttools` dependency supports text extraction from PDFs with embedded CFF
+Type1 fonts. If an older installation warns that fontTools is missing, update
+the repository and run `python -m pip install -e .` in the same Python environment
+that runs `zotero-agent`. You can also install it directly with
+`python -m pip install fonttools`. This font warning is separate from API billing
+or rate-limit errors.
+
 ## Recovery and privacy
 
 Local state and reports are in `.zotero-agent` relative to the current working
