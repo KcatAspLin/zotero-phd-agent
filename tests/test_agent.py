@@ -56,6 +56,7 @@ class FakeHTTP:
         self.objects = {"items": {}, "collections": {}}
         self.calls = []
         self.model_calls = 0
+        self.local_calls = 0
         self.classification = analysis()
         self.abstract = ""
         self.uploads = 0
@@ -80,6 +81,10 @@ class FakeHTTP:
             self.model_calls += 1
             return response({"status": "completed", "output": [{"type": "message", "content": [
                 {"type": "output_text", "text": json.dumps(self.classification)}]}]})
+        if url.endswith("/api/chat"):
+            self.local_calls += 1
+            assert not kw.get("headers", {}).get("Authorization")
+            return response({"done": True, "done_reason": "stop", "message": {"content": json.dumps(self.classification)}})
         if "storage.example" in url:
             assert "Zotero-API-Key" not in kw.get("headers", {})
             assert "Authorization" not in kw.get("headers", {})
@@ -150,7 +155,7 @@ class AgentTests(unittest.TestCase):
         self.state = State(self.root / "state")
         self.env = patch.dict(os.environ, {"ZOTERO_LIBRARY_ID": "123", "ZOTERO_LIBRARY_TYPE": "user",
                                           "ZOTERO_API_KEY": "fake-zotero", "OPENAI_API_KEY": "fake-openai",
-                                          "OPENAI_MODEL": "fake-model", "ZOTERO_PHD_COLLECTION_KEY": ""})
+                                          "OPENAI_MODEL": "fake-model", "ZOTERO_PHD_COLLECTION_KEY": "", "LLM_PROVIDER": "openai"})
         self.env.start()
 
     def tearDown(self):
@@ -314,6 +319,31 @@ class AgentTests(unittest.TestCase):
         self.assertIn(TITLE, pdf["text"])
         self.assertFalse(pdf["sampled"])
         self.assertEqual(date_string({"created": {"date-parts": [[2020]]}}), "")
+
+    def test_local_import_without_openai_key(self):
+        with patch.dict(os.environ, {"LLM_PROVIDER": "ollama", "OPENAI_API_KEY": "", "OLLAMA_MODEL": "qwen3:8b",
+                                    "OLLAMA_BASE_URL": "http://127.0.0.1:11434", "OLLAMA_NUM_CTX": "32768"}):
+            result = self.run_agent()
+            self.assertEqual(result["status"], "complete")
+            self.assertEqual(result["plan"]["provider"], "ollama")
+            self.assertEqual(self.http.local_calls, 1)
+            self.assertEqual(self.http.model_calls, 0)
+            self.run_agent()
+            self.assertEqual(self.http.local_calls, 1)
+
+    def test_switching_provider_reanalyzes_without_duplicate_upload(self):
+        original = self.run_agent()
+        with patch.dict(os.environ, {"LLM_PROVIDER": "ollama", "OLLAMA_MODEL": "qwen3:8b",
+                                    "OLLAMA_BASE_URL": "http://127.0.0.1:11434", "OLLAMA_NUM_CTX": "32768"}):
+            updated = self.run_agent()
+            self.assertEqual(updated["item_key"], original["item_key"])
+            self.assertEqual(self.http.local_calls, 1)
+            self.assertEqual(self.http.uploads, 1)
+
+    def test_pdf_byte_budget_is_respected(self):
+        pdf = read_pdf(self.pdf, byte_budget=250)
+        self.assertTrue(pdf["sampled"])
+        self.assertLessEqual(len(pdf["text"].encode("utf-8")), 250)
 
 
 if __name__ == "__main__":

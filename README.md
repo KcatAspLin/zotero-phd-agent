@@ -3,6 +3,7 @@
 Turn a DOI and a PDF into a Zotero record with authors, journal, publication date,
 DOI, abstract, the PDF attachment, one category under **PhD**, and **five generated
 scientific keyword tags**. Includes single-paper import and an automatic inbox.
+Choose a free local model through **Ollama**, or the OpenAI API.
 
 ## Install on your Mac
 
@@ -24,8 +25,12 @@ Open `.env` in a text editor and set:
 | `ZOTERO_LIBRARY_ID` | Your numeric Zotero user ID, shown on the API keys page |
 | `ZOTERO_LIBRARY_TYPE` | `user` for your personal library; `group` for a group library |
 | `ZOTERO_API_KEY` | A Zotero key with library read/write and file access |
-| `OPENAI_API_KEY` | Your OpenAI API key |
-| `OPENAI_MODEL` | A model supporting Responses and Structured Outputs; example: `gpt-5-mini` |
+| `LLM_PROVIDER` | `ollama` for a local model or `openai` (default) |
+| `OLLAMA_MODEL` | Local model name; start with `qwen3:8b` |
+| `OLLAMA_BASE_URL` | Local endpoint, default `http://127.0.0.1:11434` |
+| `OLLAMA_NUM_CTX` | Local context size in tokens, default `32768`; must be supported by your model |
+| `OPENAI_API_KEY` | Required only for the `openai` provider |
+| `OPENAI_MODEL` | Used only for OpenAI; example: `gpt-5-mini` |
 | `CROSSREF_EMAIL` | Optional email for metadata requests |
 
 Create your Zotero key at <https://www.zotero.org/settings/keys/new>. For a group,
@@ -37,7 +42,87 @@ quotes; it does not execute shell commands or expand variables.
 This version uploads to **Zotero File Storage** using the Web API. Zotero desktop
 does not need to be running for the upload; enable Zotero syncing to see changes
 there. WebDAV and linked-file storage are not implemented. Available Zotero file
-storage and model API access are required; model requests may incur API charges.
+storage and access to your chosen model backend are required. OpenAI requests may
+incur API charges; downloaded local Ollama models have no per-request API fee.
+
+## Use a free local model with Ollama
+
+1. Install [Ollama for macOS](https://ollama.com/download/mac) and open the app.
+   Current Ollama requires macOS 14 or newer and supports Apple Silicon GPU
+   acceleration. You do not need an Ollama account or an OpenAI API key for the
+   downloaded local models below.
+2. In Terminal, download a model:
+
+   ```bash
+   ollama pull qwen3:8b
+   ```
+
+   This is about a 5.2 GB download, not its total runtime memory requirement.
+   `qwen3:14b` is a larger alternative (about 9.3 GB download). Start with 8B;
+   performance depends on your Mac and context size, and classification quality
+   needs checking on your papers. Both models are available under Apache 2.0.
+3. Update the agent if you already installed it:
+
+   ```bash
+   git pull --ff-only
+   python -m pip install -e .
+   ```
+
+4. Edit your existing `.env` to include these values (replace existing values,
+   rather than leaving duplicate entries):
+
+   ```dotenv
+   LLM_PROVIDER=ollama
+   OLLAMA_MODEL=qwen3:8b
+   OLLAMA_BASE_URL=http://127.0.0.1:11434
+   OLLAMA_NUM_CTX=32768
+   ```
+
+   Keep your Zotero ID and key configured. `OPENAI_API_KEY` may be empty and is
+   ignored by this provider. Shell environment variables still override `.env`.
+5. Try a preview, selecting the PDF in the file picker:
+
+   ```bash
+   zotero-agent preview --doi '10.xxxx/your-doi'
+   ```
+
+   Inspect the proposed metadata, category and tags. If they look right, import:
+
+   ```bash
+   zotero-agent import --doi '10.xxxx/your-doi'
+   ```
+
+Ollama must be running on the **same computer** as the agent. Opening its app
+starts the server. Alternatively, run `ollama serve` in another Terminal if a
+server is not already running. Use `ollama list` to check downloaded models.
+First-time loading and analysis can take several minutes. The agent allows up
+to 15 minutes per local HTTP request and processes papers sequentially.
+
+Local analysis uses Ollama's `/api/chat`, a JSON schema, temperature 0 and no
+thinking output. It applies the same five-tag validation, DOI/PDF match check,
+verbatim-abstract check and review rules as the OpenAI provider. Local generation
+may be less reliable; inspect initial previews before relying on automatic
+classification. Invalid/truncated responses stop the import rather than create
+a partial record or fall back to a cloud model.
+
+The local provider accepts loopback endpoints only, bypasses HTTP proxies, and
+does not attach API keys or follow redirects. Choose downloaded local models,
+not Ollama cloud models: cloud-tagged model names are rejected. For stricter
+local-only operation, disable cloud features in Ollama itself using the setting
+documented at <https://docs.ollama.com/faq#how-do-i-disable-ollamas-cloud-features>.
+Local aliases should also point to local model weights.
+
+To fit local contexts, the agent uses a conservative UTF-8 byte budget (designed
+for byte-based tokenizers such as Qwen3) with space reserved for the response and
+chat framing. Long PDFs retain front matter and samples from later pages;
+reports show `sampled: true`. This is not a tokenizer-exact accounting method
+for every possible model. Use a model that supports your configured context.
+If memory is tight, try `OLLAMA_NUM_CTX=16384`; this also reduces paper coverage.
+Changing provider/model/context causes a new analysis while retaining the same
+Zotero item and attachment recovery state. `--refresh` forces another analysis.
+
+To return to the OpenAI provider, set `LLM_PROVIDER=openai` and configure the
+OpenAI key/model. There is no automatic provider fallback.
 
 ## Import one paper
 
@@ -197,9 +282,10 @@ attachments. Existing record types other than `journalArticle` require manual
 reconciliation; this first version creates journal-article records. Preprints
 without journal information will normally require review.
 
-Readable text PDFs up to 100 MiB are supported. Scans need OCR first. For papers
-longer than 90,000 extracted characters, the model receives front matter plus
-samples from the remaining pages; reports mark this with `sampled: true`.
+Readable text PDFs up to 100 MiB are supported. Scans need OCR first. In OpenAI
+mode, papers longer than 90,000 extracted characters are sampled; local mode
+uses its smaller context-aware byte budget. The model receives front matter
+plus samples from remaining pages; reports mark this with `sampled: true`.
 Classification can miss details in omitted text.
 
 The `fonttools` dependency supports text extraction from PDFs with embedded CFF
@@ -226,8 +312,10 @@ The same state directory prevents overlapping imports on one computer. Separate
 computers/state directories do not provide a distributed lock; avoid concurrent
 imports of the same DOI.
 
-The DOI goes to metadata services. Extracted text and metadata go to OpenAI for
-classification with `store: false`; this is not a promise of zero retention.
+The DOI goes to metadata services. With `LLM_PROVIDER=openai`, extracted text
+and metadata go to OpenAI with `store: false`; this is not a promise of zero
+retention. With `LLM_PROVIDER=ollama`, analysis requests go to your local Ollama
+server; use downloaded local weights to keep inference on your computer.
 The PDF goes to Zotero and its authorised storage endpoint. API keys are scoped
 to their respective services and never sent with the storage upload. Paper text
 is treated as untrusted evidence and has no tool access. Reports contain paper
@@ -271,8 +359,9 @@ python -m unittest discover -s tests -v
 These tests simulate the metadata, model, Zotero and storage services, including
 lost write responses, upload failures, duplicate imports, collection changes,
 tag preservation and malformed inbox input. No live Zotero account or paid
-model request was used during development. A live preview and one real import
-are still needed with your credentials. Network/authentication errors and model
+model request was used during development. The Ollama adapter was tested with
+simulated model responses, not a downloaded model. A live preview and one real
+import are still needed on your computer. Network/authentication errors and model
 availability are reported at runtime. Linux/macOS are supported; the file lock
 uses `fcntl`, so native Windows is not currently supported.
 
@@ -286,3 +375,5 @@ Official references used for implementation:
 - Attachment uploads: <https://www.zotero.org/support/dev/web_api/v3/file_upload>
 - DOI metadata: <https://www.crossref.org/documentation/retrieve-metadata/rest-api/>
 - Structured model output: <https://developers.openai.com/api/docs/guides/structured-outputs>
+- Ollama structured outputs: <https://docs.ollama.com/capabilities/structured-outputs>
+- Ollama chat API: <https://docs.ollama.com/api/chat>

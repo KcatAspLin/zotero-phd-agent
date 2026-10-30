@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .content import CATEGORIES, analyze, file_hash, make_plan, metadata, normalize_doi, read_pdf
 from .gui import choose_pdf
+from .local_llm import LLMConfig, analyze_local, local_text_budget
 from .net import AgentError, HTTP
 from .state import State, atomic_json
 from .zotero import Zotero
@@ -39,6 +40,7 @@ def process(args, state, http):
     if not path.is_file():
         raise AgentError(f"PDF not found: {path}")
     sha = file_hash(path)
+    config = LLMConfig.from_env()
     library = os.getenv("ZOTERO_LIBRARY_TYPE", "user") + ":" + os.getenv("ZOTERO_LIBRARY_ID", "")
     zot = None
     if args.command != "preview":
@@ -47,17 +49,21 @@ def process(args, state, http):
     with state.lock():
         job, identity = state.job(library, doi, sha)
         plan = job.get("plan")
-        if plan is None or args.refresh:
+        if plan is None or args.refresh or not config.matches(plan):
             key = os.getenv("OPENAI_API_KEY", "")
-            if not key:
+            if config.provider == "openai" and not key:
                 raise AgentError("Set OPENAI_API_KEY in .env")
-            pdf = read_pdf(path)
+            meta = metadata(http, doi, os.getenv("CROSSREF_EMAIL", ""))
+            if config.provider == "ollama":
+                pdf = read_pdf(path, byte_budget=local_text_budget(meta, config.num_ctx))
+            else:
+                pdf = read_pdf(path)
             if pdf["sha256"] != sha:
                 raise AgentError("PDF changed during reading; rerun once the copy finishes")
-            meta = metadata(http, doi, os.getenv("CROSSREF_EMAIL", ""))
-            model = os.getenv("OPENAI_MODEL", "gpt-5-mini")
-            classification = analyze(http, meta, pdf, key, model)
-            plan = make_plan(meta, pdf, classification, model)
+            classification = (analyze_local(http, meta, pdf, config) if config.provider == "ollama"
+                              else analyze(http, meta, pdf, key, config.model))
+            plan = make_plan(meta, pdf, classification, config.model)
+            plan.update(provider=config.provider, analysis_config=config.cache_settings())
             job["plan"] = plan
             state.save()
         # Copy so a one-off manual choice does not modify the cached original analysis.

@@ -160,7 +160,8 @@ class Zotero:
         patch["tags"] = merged_tags(data, plan["tags"])
         extra = "\n".join(line for line in data.get("extra", "").splitlines() if not line.startswith(MARKER))
         record = {"tags": plan["tags"], "category": plan["category"], "metadata": plan["metadata"]["metadata_source"],
-                  "abstract": plan["metadata"]["abstract_source"], "model": plan["model"]}
+                  "abstract": plan["metadata"]["abstract_source"], "model": plan["model"],
+                  "provider": plan.get("provider", "openai")}
         patch["extra"] = (extra + "\n" + MARKER + json.dumps(record, ensure_ascii=False)).lstrip("\n")
         patch = {k: v for k, v in patch.items() if data.get(k) != v}
         if patch:

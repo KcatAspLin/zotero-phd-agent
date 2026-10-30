@@ -93,13 +93,22 @@ def seconds(value):
 class HTTP:
     def __init__(self):
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         self.blocked_until = {}
 
     def request(self, method, url, *, headers=None, data=None, json_data=None,
-                form=None, retry=False, retry_429=False, redirects=0):
-        host = urllib.parse.urlsplit(url).netloc
-        if not url.startswith("https://"):
+                form=None, retry=False, retry_429=False, redirects=0,
+                allow_localhost=False, timeout=180):
+        parsed = urllib.parse.urlsplit(url)
+        host = parsed.netloc
+        local = allow_localhost and parsed.hostname in ("127.0.0.1", "localhost", "::1")
+        if allow_localhost and (not local or parsed.username or parsed.password or parsed.scheme not in ("http", "https")):
+            raise AgentError("Local model requests must use a loopback address without credentials")
+        if parsed.scheme != "https" and not (local and parsed.scheme == "http"):
             raise AgentError("HTTPS is required")
+        if local and any(k.lower() in ("authorization", "zotero-api-key") for k in (headers or {})):
+            raise AgentError("Credentials must not be sent to the local model")
+        opener = self.local_opener if local else self.opener
         hdr = {"User-Agent": "PhD-Zotero-Agent/0.1", **(headers or {})}
         if json_data is not None:
             data = json.dumps(json_data).encode()
@@ -116,7 +125,7 @@ class HTTP:
                 time.sleep(delay)
             req = urllib.request.Request(url, data=data, headers=hdr, method=method)
             try:
-                with self.opener.open(req, timeout=180) as result:
+                with opener.open(req, timeout=timeout) as result:
                     response = Response(result.status, dict(result.headers.items()), result.read())
             except urllib.error.HTTPError as exc:
                 response = Response(exc.code, dict(exc.headers.items()), exc.read())
@@ -130,6 +139,8 @@ class HTTP:
             wait = max(seconds(lower.get("backoff")), seconds(lower.get("retry-after")))
             if wait:
                 self.blocked_until[host] = time.monotonic() + wait
+            if local and response.status in (301, 302, 303, 307, 308):
+                raise AgentError("Local model redirects are not followed")
             if response.status in (301, 302, 303, 307, 308) and method == "GET" and redirects < 5:
                 target = urllib.parse.urljoin(url, lower.get("location", ""))
                 # Metadata-only redirects: never carry credentials across a redirect.

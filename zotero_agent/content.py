@@ -49,7 +49,7 @@ def file_hash(path, algorithm="sha256"):
     return digest.hexdigest()
 
 
-def read_pdf(path, budget=90000):
+def read_pdf(path, budget=90000, *, byte_budget=None):
     from pypdf import PdfReader
     path = Path(path).expanduser().resolve()
     if not path.is_file():
@@ -67,20 +67,28 @@ def read_pdf(path, budget=90000):
         raise AgentError("Could not extract PDF text; supply a readable PDF") from exc
     if len("".join(pages).strip()) < 200:
         raise AgentError("Too little PDF text; run OCR on scanned PDFs first")
-    total = sum(map(len, pages))
-    if total <= budget:
+    use_bytes = byte_budget is not None
+    limit = byte_budget if use_bytes else budget
+    measure = (lambda text: len(text.encode("utf-8"))) if use_bytes else len
+
+    def clip(text, size):
+        return text.encode("utf-8")[:size].decode("utf-8", errors="ignore") if use_bytes else text[:size]
+
+    total = sum(measure(p) for p in pages) + 2 * max(0, len(pages) - 1)
+    if total <= limit:
         selected = pages
     else:
         # Preserve front matter, then sample every remaining page rather than silently
         # classifying a long paper using its first few pages alone.
         front = min(3, len(pages))
-        first_budget = budget // 2
-        first = "\n".join(pages[:front])[:first_budget]
-        rest_budget = budget - len(first)
-        per_page = max(1, rest_budget // max(1, len(pages) - front))
-        selected = [first] + [p[:per_page] for p in pages[front:]]
+        content_budget = max(0, limit - 2 * len(pages))
+        first_budget = content_budget // 2 if len(pages) > front else content_budget
+        first = clip("\n".join(pages[:front]), first_budget)
+        rest_budget = content_budget - measure(first)
+        per_page = max(0, rest_budget // max(1, len(pages) - front))
+        selected = [first] + [clip(p, per_page) for p in pages[front:]]
     return {"path": str(path), "sha256": file_hash(path), "pages": len(pages),
-            "sampled": total > budget, "text": "\n\n".join(selected),
+            "sampled": total > limit, "text": "\n\n".join(selected),
             "front_text": "\n".join(pages[:3])}
 
 
@@ -163,13 +171,17 @@ confidence is your classification confidence, not a calibrated probability.
 """
 
 
-def analyze(http, meta, pdf, key, model):
+def classification_schema():
     props = {"category": {"type": "string", "enum": list(CATEGORIES)},
              "tags": {"type": "array", "items": {"type": "string"}, "minItems": 5, "maxItems": 5},
              "reason": {"type": "string"}, "confidence": {"type": "number"},
              "pdf_title": {"type": "string"}, "pdf_abstract": {"type": "string"},
              "matches_doi_metadata": {"type": "boolean"}}
-    schema = {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+def analyze(http, meta, pdf, key, model):
+    schema = classification_schema()
     response = http.request("POST", "https://api.openai.com/v1/responses",
                             headers={"Authorization": f"Bearer {key}"}, retry_429=True, json_data={
         "model": model, "store": False, "max_output_tokens": 8000,
